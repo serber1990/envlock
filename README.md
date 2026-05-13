@@ -1,6 +1,6 @@
 # envlock
 
-[![PyPI version](https://badge.fury.io/py/envlock.svg)](https://badge.fury.io/py/envlock)
+[![PyPI version](https://badge.fury.io/py/env-drift.svg)](https://badge.fury.io/py/env-drift)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 
 Freeze your environment. Detect when it drifts.
@@ -30,7 +30,7 @@ Freeze your environment. Detect when it drifts.
 ## 📥 Installation
 
 ```bash
-pip install envlock
+pip install env-drift
 ```
 
 ---
