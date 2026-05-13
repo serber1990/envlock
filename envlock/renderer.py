@@ -1,0 +1,180 @@
+"""
+Render an EnvDriftReport to terminal, Markdown, or JSON.
+"""
+import json
+from datetime import datetime
+from typing import List
+
+from shellcolorize import Color
+from .diff import EnvDriftReport, Change
+
+_SEV_COLOR = {
+    'CRITICAL': Color.RED,
+    'WARNING':  Color.YELLOW,
+    'INFO':     Color.CYAN,
+}
+
+_SEV_ICON = {
+    'CRITICAL': '⛔',
+    'WARNING':  '⚠ ',
+    'INFO':     '·',
+}
+
+_KIND_SYM = {
+    'added':   '+',
+    'removed': '-',
+    'changed': '~',
+}
+
+_SECTIONS = [
+    'python.runtime', 'python.packages',
+    'node.runtime',   'node.packages',
+    'system.runtime', 'lockfiles', 'env_vars',
+]
+
+_SEC_LABEL = {
+    'python.runtime':  'Python Runtime',
+    'python.packages': 'Python Packages',
+    'node.runtime':    'Node.js Runtime',
+    'node.packages':   'Node.js Packages',
+    'system.runtime':  'System / Runtimes',
+    'lockfiles':       'Lockfiles',
+    'env_vars':        'Environment Variables',
+}
+
+
+def _header() -> None:
+    title = 'envlock  ·  environment drift report'
+    w = len(title) + 6
+    print()
+    print(f"  {Color.CYAN}╔{'═' * w}╗{Color.RESET}")
+    print(f"  {Color.CYAN}║{Color.RESET}  {Color.BOLD}{Color.CYAN}{title}{Color.RESET}  {Color.CYAN}║{Color.RESET}")
+    print(f"  {Color.CYAN}╚{'═' * w}╝{Color.RESET}")
+    print()
+
+
+def _meta_line(label: str, meta: dict) -> None:
+    ts   = meta.get('captured_at', '?')
+    host = meta.get('hostname', '?')
+    proj = meta.get('project_path', '?')
+    print(f"  {Color.DIM}{label:<10}{Color.RESET} {ts}  ({host})  {Color.DIM}{proj}{Color.RESET}")
+
+
+def _section(label: str) -> None:
+    print()
+    print(f"  {Color.CYAN}── {label} {'─' * max(0, 42 - len(label))}{Color.RESET}")
+
+
+def _change_line(c: Change) -> None:
+    color  = _SEV_COLOR.get(c.severity, '')
+    icon   = _SEV_ICON.get(c.severity, ' ')
+    sym    = _KIND_SYM.get(c.kind, ' ')
+    detail = f"  {Color.DIM}{c.detail}{Color.RESET}" if c.detail else ''
+    print(f"  {color}{icon} {sym}  {c.description}{Color.RESET}{detail}")
+
+
+def render_terminal(report: EnvDriftReport) -> None:
+    _header()
+    _meta_line('Baseline', report.baseline_meta)
+    _meta_line('Current',  report.current_meta)
+    print()
+
+    if report.is_clean:
+        print(f"  {Color.GREEN}✔  No drift detected — environment matches baseline.{Color.RESET}")
+        print()
+        return
+
+    by_sec = {}
+    for c in report.changes:
+        by_sec.setdefault(c.section, []).append(c)
+
+    for sec in _SECTIONS:
+        changes = by_sec.get(sec, [])
+        if not changes:
+            continue
+        _section(_SEC_LABEL.get(sec, sec))
+        for c in changes:
+            _change_line(c)
+
+    print()
+    print(f"  {'─' * 44}")
+    total = len(report.changes)
+    crit  = len(report.critical)
+    warn  = len(report.warnings)
+    info  = len(report.info)
+    parts = []
+    if crit: parts.append(f"{Color.RED}{crit} critical{Color.RESET}")
+    if warn: parts.append(f"{Color.YELLOW}{warn} warning{'s' if warn > 1 else ''}{Color.RESET}")
+    if info: parts.append(f"{Color.CYAN}{info} info{Color.RESET}")
+    print(f"  {Color.BOLD}{total} change{'s' if total != 1 else ''} detected{Color.RESET}"
+          + (f"  ({', '.join(parts)})" if parts else ''))
+    print()
+
+
+def render_markdown(report: EnvDriftReport) -> str:
+    lines = []
+    ts_now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+    lines += [
+        "# envlock — Environment Drift Report",
+        "",
+        "| | |",
+        "|---|---|",
+        f"| **Baseline** | {report.baseline_meta.get('captured_at','?')}  ({report.baseline_meta.get('hostname','?')}) |",
+        f"| **Current**  | {report.current_meta.get('captured_at','?')}  ({report.current_meta.get('hostname','?')}) |",
+        f"| **Project**  | {report.current_meta.get('project_path','?')} |",
+        f"| **Generated** | {ts_now} |",
+        f"| **Changes** | {len(report.changes)} ({len(report.critical)} critical, {len(report.warnings)} warnings, {len(report.info)} info) |",
+        "",
+        "---",
+        "",
+    ]
+
+    if report.is_clean:
+        lines += ["## ✅ No drift detected", "", "Environment matches baseline.", ""]
+        return '\n'.join(lines)
+
+    by_sec = {}
+    for c in report.changes:
+        by_sec.setdefault(c.section, []).append(c)
+
+    _icons = {'CRITICAL': '⛔', 'WARNING': '⚠️', 'INFO': 'ℹ️'}
+    _syms  = {'added': '+', 'removed': '−', 'changed': '~'}
+
+    for sec in _SECTIONS:
+        changes = by_sec.get(sec, [])
+        if not changes:
+            continue
+        lines += [f"## {_SEC_LABEL.get(sec, sec)}", ""]
+        for c in changes:
+            icon   = _icons.get(c.severity, '')
+            sym    = _syms.get(c.kind, ' ')
+            detail = f" _{c.detail}_" if c.detail else ''
+            lines.append(f"- {icon} `{sym}` {c.description}{detail}")
+        lines.append("")
+
+    lines += ["---", "", f"*Generated by [envlock](https://github.com/serber1990/envlock) at {ts_now}*"]
+    return '\n'.join(lines)
+
+
+def render_json(report: EnvDriftReport) -> str:
+    return json.dumps({
+        'baseline_meta': report.baseline_meta,
+        'current_meta':  report.current_meta,
+        'summary': {
+            'total':    len(report.changes),
+            'critical': len(report.critical),
+            'warnings': len(report.warnings),
+            'info':     len(report.info),
+        },
+        'changes': [
+            {
+                'section':     c.section,
+                'kind':        c.kind,
+                'severity':    c.severity,
+                'description': c.description,
+                'detail':      c.detail,
+            }
+            for c in report.changes
+        ],
+    }, indent=2)

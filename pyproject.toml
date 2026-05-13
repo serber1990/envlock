@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "envlock"
+version = "1.0.0"
+description = "Freeze and compare Python, Node, and system environments — detect dependency drift before it breaks your builds."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Serber1990", email = "sergiox.gd@gmail.com" }]
+requires-python = ">=3.9"
+dependencies = ["shellcolorize"]
+keywords = ["environment", "dependencies", "drift", "reproducibility", "devops", "python", "node"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Environment :: Console",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Utilities",
+]
+
+[project.urls]
+Homepage = "https://github.com/serber1990/envlock"
+Repository = "https://github.com/serber1990/envlock"
+
+[project.scripts]
+envlock = "envlock.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["envlock*"]
