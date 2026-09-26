@@ -3,15 +3,14 @@ Render an EnvDriftReport to terminal, Markdown, or JSON.
 """
 import json
 from datetime import datetime
-from typing import List
-
 from shellcolorize import Color
 from .diff import EnvDriftReport, Change
 
+# Attribute names, resolved at render time so Color.auto()/disable() are respected.
 _SEV_COLOR = {
-    'CRITICAL': Color.RED,
-    'WARNING':  Color.YELLOW,
-    'INFO':     Color.CYAN,
+    'CRITICAL': 'RED',
+    'WARNING':  'YELLOW',
+    'INFO':     'CYAN',
 }
 
 _SEV_ICON = {
@@ -29,7 +28,7 @@ _KIND_SYM = {
 _SECTIONS = [
     'python.runtime', 'python.packages',
     'node.runtime',   'node.packages',
-    'system.runtime', 'lockfiles', 'env_vars',
+    'system.os', 'system.runtime', 'lockfiles', 'env_vars',
 ]
 
 _SEC_LABEL = {
@@ -37,7 +36,8 @@ _SEC_LABEL = {
     'python.packages': 'Python Packages',
     'node.runtime':    'Node.js Runtime',
     'node.packages':   'Node.js Packages',
-    'system.runtime':  'System / Runtimes',
+    'system.os':       'Operating System',
+    'system.runtime':  'Other Runtimes',
     'lockfiles':       'Lockfiles',
     'env_vars':        'Environment Variables',
 }
@@ -45,7 +45,7 @@ _SEC_LABEL = {
 
 def _header() -> None:
     title = 'envlock  ·  environment drift report'
-    w = len(title) + 6
+    w = len(title) + 4
     print()
     print(f"  {Color.CYAN}╔{'═' * w}╗{Color.RESET}")
     print(f"  {Color.CYAN}║{Color.RESET}  {Color.BOLD}{Color.CYAN}{title}{Color.RESET}  {Color.CYAN}║{Color.RESET}")
@@ -66,7 +66,7 @@ def _section(label: str) -> None:
 
 
 def _change_line(c: Change) -> None:
-    color  = _SEV_COLOR.get(c.severity, '')
+    color  = getattr(Color, _SEV_COLOR.get(c.severity, ''), '')
     icon   = _SEV_ICON.get(c.severity, ' ')
     sym    = _KIND_SYM.get(c.kind, ' ')
     detail = f"  {Color.DIM}{c.detail}{Color.RESET}" if c.detail else ''

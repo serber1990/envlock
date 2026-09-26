@@ -1,8 +1,18 @@
 """
-Diff two EnvSnapshots and produce a structured DriftReport.
+Diff two EnvSnapshots and produce a structured drift report.
+
+Severity rules:
+  CRITICAL  Python/Node major.minor change, OS or architecture change
+  WARNING   package removed or downgraded, declared constraint changed,
+            runtime patch change, lockfile removed, env var removed/changed
+  INFO      package added or upgraded, lockfile or env var added
 """
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import List, Optional
+
+from .versions import compare_versions, same_minor
+
+SEVERITIES = ('CRITICAL', 'WARNING', 'INFO')
 
 
 @dataclass
@@ -22,7 +32,7 @@ class EnvDriftReport:
 
     @property
     def is_clean(self) -> bool:
-        return len(self.changes) == 0
+        return not self.changes
 
     @property
     def critical(self) -> List[Change]:
@@ -36,210 +46,122 @@ class EnvDriftReport:
     def info(self) -> List[Change]:
         return [c for c in self.changes if c.severity == 'INFO']
 
-
-# ── Severity matrix ───────────────────────────────────────────────────────────
-
-def _sev(section: str, kind: str) -> str:
-    matrix = {
-        # Python runtime change is critical
-        ('python.runtime',  'changed'): 'CRITICAL',
-        # Node runtime change is critical
-        ('node.runtime',    'changed'): 'CRITICAL',
-        # OS / arch change is critical
-        ('system.runtime',  'changed'): 'CRITICAL',
-        # Package removed — may break reproducibility
-        ('python.packages', 'removed'): 'WARNING',
-        ('node.packages',   'removed'): 'WARNING',
-        # Package added
-        ('python.packages', 'added'):   'INFO',
-        ('node.packages',   'added'):   'INFO',
-        # Package version changed
-        ('python.packages', 'changed'): 'WARNING',
-        ('node.packages',   'changed'): 'WARNING',
-        # New lockfile
-        ('lockfiles',       'added'):   'INFO',
-        ('lockfiles',       'removed'): 'WARNING',
-        # Env var changes
-        ('env_vars',        'added'):   'INFO',
-        ('env_vars',        'removed'): 'WARNING',
-        ('env_vars',        'changed'): 'WARNING',
-    }
-    return matrix.get((section, kind), 'INFO')
-
+    def has_at_least(self, severity: str) -> bool:
+        """True if any change is as severe as `severity` or more."""
+        rank = SEVERITIES.index(severity)
+        return any(SEVERITIES.index(c.severity) <= rank for c in self.changes)
 
 # ── Per-section diffing ───────────────────────────────────────────────────────
 
-def _diff_runtime(label: str, section: str, val_a, val_b) -> List[Change]:
-    if val_a == val_b or (not val_a and not val_b):
+def _diff_runtime(label: str, section: str, a: Optional[str], b: Optional[str],
+                  critical_on_minor: bool) -> List[Change]:
+    if a == b or (not a and not b):
         return []
-    if val_a and val_b:
-        return [Change(
-            section=section, kind='changed',
-            severity=_sev(section, 'changed'),
-            description=f'{label} version changed',
-            detail=f'{val_a} → {val_b}',
-        )]
-    if not val_a and val_b:
-        return [Change(section=section, kind='added',
-                       severity='INFO', description=f'{label} detected: {val_b}')]
-    return [Change(section=section, kind='removed',
-                   severity='WARNING', description=f'{label} no longer detected (was {val_a})')]
+    if a and b:
+        if critical_on_minor and not same_minor(a, b):
+            severity = 'CRITICAL'
+        elif section == 'system.os':
+            severity = 'CRITICAL'
+        else:
+            severity = 'WARNING'
+        return [Change(section, 'changed', severity, f'{label} version changed', f'{a} → {b}')]
+    if b:
+        return [Change(section, 'added', 'INFO', f'{label} detected', b)]
+    return [Change(section, 'removed', 'WARNING', f'{label} no longer detected', f'was {a}')]
 
 
-def _diff_pkg_map(section: str, label: str, map_a: dict, map_b: dict) -> List[Change]:
+def _diff_versions(section: str, label: str, a: dict, b: dict) -> List[Change]:
+    """Resolved versions (pip list, package-lock): upgrades are INFO, downgrades WARNING."""
     changes = []
-    keys_a, keys_b = set(map_a), set(map_b)
-
-    for k in sorted(keys_b - keys_a):
-        changes.append(Change(
-            section=section, kind='added',
-            severity=_sev(section, 'added'),
-            description=f'{label}: {k} added',
-            detail=map_b[k] or None,
-        ))
-    for k in sorted(keys_a - keys_b):
-        changes.append(Change(
-            section=section, kind='removed',
-            severity=_sev(section, 'removed'),
-            description=f'{label}: {k} removed',
-            detail=f'was {map_a[k]}' if map_a[k] else None,
-        ))
-    for k in sorted(keys_a & keys_b):
-        if map_a[k] != map_b[k]:
-            changes.append(Change(
-                section=section, kind='changed',
-                severity=_sev(section, 'changed'),
-                description=f'{label}: {k} version changed',
-                detail=f'{map_a[k]} → {map_b[k]}',
-            ))
+    for k in sorted(b.keys() - a.keys()):
+        changes.append(Change(section, 'added', 'INFO', f'{label}: {k} added', b[k] or None))
+    for k in sorted(a.keys() - b.keys()):
+        changes.append(Change(section, 'removed', 'WARNING', f'{label}: {k} removed',
+                              f'was {a[k]}' if a[k] else None))
+    for k in sorted(a.keys() & b.keys()):
+        if a[k] == b[k]:
+            continue
+        order = compare_versions(str(a[k]), str(b[k]))
+        if order is not None and order < 0:
+            changes.append(Change(section, 'changed', 'INFO', f'{label}: {k} upgraded', f'{a[k]} → {b[k]}'))
+        elif order is not None and order > 0:
+            changes.append(Change(section, 'changed', 'WARNING', f'{label}: {k} downgraded', f'{a[k]} → {b[k]}'))
+        else:
+            changes.append(Change(section, 'changed', 'WARNING', f'{label}: {k} version changed',
+                                  f'{a[k]} → {b[k]}'))
     return changes
 
 
-def _diff_list(section: str, label: str, list_a: list, list_b: list) -> List[Change]:
-    a, b = set(list_a), set(list_b)
+def _diff_declared(section: str, label: str, a: dict, b: dict) -> List[Change]:
+    """Declared constraints (requirements.txt, pyproject, package.json): any change is a WARNING."""
     changes = []
-    for item in sorted(b - a):
-        changes.append(Change(section=section, kind='added',
-                              severity=_sev(section, 'added'),
-                              description=f'{label}: {item} added'))
-    for item in sorted(a - b):
-        changes.append(Change(section=section, kind='removed',
-                              severity=_sev(section, 'removed'),
-                              description=f'{label}: {item} removed'))
-    return changes
-
-
-def _diff_env_vars(map_a: dict, map_b: dict) -> List[Change]:
-    changes = []
-    # Skip PATH — too noisy / session-specific
-    _SKIP = {'PATH'}
-    a = {k: v for k, v in map_a.items() if k not in _SKIP}
-    b = {k: v for k, v in map_b.items() if k not in _SKIP}
-
-    for k in sorted(set(b) - set(a)):
-        changes.append(Change(section='env_vars', kind='added',
-                              severity=_sev('env_vars', 'added'),
-                              description=f'Env var added: {k}',
-                              detail=b[k]))
-    for k in sorted(set(a) - set(b)):
-        changes.append(Change(section='env_vars', kind='removed',
-                              severity=_sev('env_vars', 'removed'),
-                              description=f'Env var removed: {k}'))
-    for k in sorted(set(a) & set(b)):
+    for k in sorted(b.keys() - a.keys()):
+        changes.append(Change(section, 'added', 'INFO', f'{label}: {k} added', b[k] or None))
+    for k in sorted(a.keys() - b.keys()):
+        changes.append(Change(section, 'removed', 'WARNING', f'{label}: {k} removed',
+                              f'was {a[k]}' if a[k] else None))
+    for k in sorted(a.keys() & b.keys()):
         if a[k] != b[k]:
-            changes.append(Change(section='env_vars', kind='changed',
-                                  severity=_sev('env_vars', 'changed'),
-                                  description=f'Env var changed: {k}',
-                                  detail=f'{a[k][:60]} → {b[k][:60]}'))
+            changes.append(Change(section, 'changed', 'WARNING', f'{label}: {k} constraint changed',
+                                  f'{a[k] or "(any)"} → {b[k] or "(any)"}'))
     return changes
 
+
+def _diff_list(section: str, label: str, a: list, b: list) -> List[Change]:
+    changes = [Change(section, 'added', 'INFO', f'{label}: {x} added') for x in sorted(set(b) - set(a))]
+    changes += [Change(section, 'removed', 'WARNING', f'{label}: {x} removed') for x in sorted(set(a) - set(b))]
+    return changes
+
+
+def _diff_env_vars(a: dict, b: dict) -> List[Change]:
+    skip = {'PATH'}   # too noisy / session-specific
+    a = {k: v for k, v in a.items() if k not in skip}
+    b = {k: v for k, v in b.items() if k not in skip}
+    changes = [Change('env_vars', 'added', 'INFO', f'Env var added: {k}', b[k]) for k in sorted(b.keys() - a.keys())]
+    changes += [Change('env_vars', 'removed', 'WARNING', f'Env var removed: {k}') for k in sorted(a.keys() - b.keys())]
+    changes += [Change('env_vars', 'changed', 'WARNING', f'Env var changed: {k}', f'{a[k][:60]} → {b[k][:60]}')
+                for k in sorted(a.keys() & b.keys()) if a[k] != b[k]]
+    return changes
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def diff_snapshots(snap_a, snap_b) -> EnvDriftReport:
-    report = EnvDriftReport(
-        baseline_meta=snap_a.meta,
-        current_meta=snap_b.meta,
-    )
-    changes = report.changes
+    report = EnvDriftReport(baseline_meta=snap_a.meta, current_meta=snap_b.meta)
+    ch = report.changes
+    py_a, py_b = snap_a.python, snap_b.python
+    nd_a, nd_b = snap_a.node, snap_b.node
+    sy_a, sy_b = snap_a.system, snap_b.system
 
-    # ── Python runtime
-    changes.extend(_diff_runtime(
-        'Python', 'python.runtime',
-        snap_a.python.get('python_version'),
-        snap_b.python.get('python_version'),
-    ))
+    def pkgs(env: dict, key: str) -> dict:
+        return env.get('packages', {}).get(key, {}) or {}
 
-    # ── Python packages — compare pip_installed (authoritative)
-    pip_a = snap_a.python.get('packages', {}).get('pip_installed', {})
-    pip_b = snap_b.python.get('packages', {}).get('pip_installed', {})
-    changes.extend(_diff_pkg_map('python.packages', 'pip', pip_a, pip_b))
+    # Python
+    ch += _diff_runtime('Python', 'python.runtime', py_a.get('python_version'),
+                        py_b.get('python_version'), critical_on_minor=True)
+    ch += _diff_versions('python.packages', 'pip', pkgs(py_a, 'pip_installed'), pkgs(py_b, 'pip_installed'))
+    ch += _diff_declared('python.packages', 'requirements.txt',
+                         pkgs(py_a, 'requirements_txt'), pkgs(py_b, 'requirements_txt'))
+    ch += _diff_declared('python.packages', 'pyproject',
+                         pkgs(py_a, 'pyproject_deps'), pkgs(py_b, 'pyproject_deps'))
+    ch += _diff_list('lockfiles', 'Python lockfile', py_a.get('lockfiles', []), py_b.get('lockfiles', []))
 
-    # ── requirements.txt declared versions
-    req_a = snap_a.python.get('packages', {}).get('requirements_txt', {})
-    req_b = snap_b.python.get('packages', {}).get('requirements_txt', {})
-    changes.extend(_diff_pkg_map('python.packages', 'requirements.txt', req_a, req_b))
+    # Node
+    ch += _diff_runtime('Node.js', 'node.runtime', nd_a.get('node_version'),
+                        nd_b.get('node_version'), critical_on_minor=True)
+    ch += _diff_declared('node.packages', 'npm dep', pkgs(nd_a, 'dependencies'), pkgs(nd_b, 'dependencies'))
+    ch += _diff_declared('node.packages', 'npm devDep',
+                         pkgs(nd_a, 'devDependencies'), pkgs(nd_b, 'devDependencies'))
+    ch += _diff_versions('node.packages', 'npm locked', pkgs(nd_a, 'locked'), pkgs(nd_b, 'locked'))
+    ch += _diff_list('lockfiles', 'Node lockfile', nd_a.get('lockfiles', []), nd_b.get('lockfiles', []))
 
-    # ── Python lockfiles list
-    changes.extend(_diff_list(
-        'lockfiles', 'Python lockfile',
-        snap_a.python.get('lockfiles', []),
-        snap_b.python.get('lockfiles', []),
-    ))
-
-    # ── Node runtime
-    changes.extend(_diff_runtime(
-        'Node.js', 'node.runtime',
-        snap_a.node.get('node_version'),
-        snap_b.node.get('node_version'),
-    ))
-
-    # ── Node dependencies
-    deps_a = snap_a.node.get('packages', {}).get('dependencies', {})
-    deps_b = snap_b.node.get('packages', {}).get('dependencies', {})
-    changes.extend(_diff_pkg_map('node.packages', 'npm dep', deps_a, deps_b))
-
-    dev_a = snap_a.node.get('packages', {}).get('devDependencies', {})
-    dev_b = snap_b.node.get('packages', {}).get('devDependencies', {})
-    changes.extend(_diff_pkg_map('node.packages', 'npm devDep', dev_a, dev_b))
-
-    # ── Node lockfiles
-    changes.extend(_diff_list(
-        'lockfiles', 'Node lockfile',
-        snap_a.node.get('lockfiles', []),
-        snap_b.node.get('lockfiles', []),
-    ))
-
-    # ── System runtimes (python already covered; check others)
-    sys_runtimes_a = snap_a.system.get('runtimes', {})
-    sys_runtimes_b = snap_b.system.get('runtimes', {})
-    for name in sorted(set(sys_runtimes_a) | set(sys_runtimes_b)):
-        if name == 'python':
-            continue  # already covered
-        changes.extend(_diff_runtime(
-            name.capitalize(), 'system.runtime',
-            sys_runtimes_a.get(name),
-            sys_runtimes_b.get(name),
-        ))
-
-    # ── OS
-    changes.extend(_diff_runtime(
-        'OS', 'system.runtime',
-        snap_a.system.get('os'),
-        snap_b.system.get('os'),
-    ))
-
-    # ── Architecture
-    changes.extend(_diff_runtime(
-        'Arch', 'system.runtime',
-        snap_a.system.get('arch'),
-        snap_b.system.get('arch'),
-    ))
-
-    # ── Env vars
-    changes.extend(_diff_env_vars(
-        snap_a.system.get('env_vars', {}),
-        snap_b.system.get('env_vars', {}),
-    ))
+    # System (python/node runtimes are already covered above)
+    rt_a, rt_b = sy_a.get('runtimes', {}), sy_b.get('runtimes', {})
+    for name in sorted((rt_a.keys() | rt_b.keys()) - {'python', 'node'}):
+        ch += _diff_runtime(name.capitalize(), 'system.runtime', rt_a.get(name), rt_b.get(name),
+                            critical_on_minor=False)
+    ch += _diff_runtime('OS', 'system.os', sy_a.get('os'), sy_b.get('os'), critical_on_minor=False)
+    ch += _diff_runtime('Architecture', 'system.os', sy_a.get('arch'), sy_b.get('arch'),
+                        critical_on_minor=False)
+    ch += _diff_env_vars(sy_a.get('env_vars', {}), sy_b.get('env_vars', {}))
 
     return report
