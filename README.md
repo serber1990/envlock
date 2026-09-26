@@ -10,6 +10,10 @@ Freeze your environment. Detect when it drifts.
 exactly what changed — so "works on my machine" stops being an excuse. Use it locally, in CI, or to compare
 staging with production.
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/serber1990/envlock/main/docs/demo.gif" alt="envlock demo: snapshot, a downgraded package, drift detected" width="820">
+</p>
+
 ---
 
 ## ✨ What it tracks
