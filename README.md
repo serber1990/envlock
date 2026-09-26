@@ -1,7 +1,7 @@
 # envlock
 
 [![CI](https://github.com/serber1990/envlock/actions/workflows/ci.yml/badge.svg)](https://github.com/serber1990/envlock/actions/workflows/ci.yml)
-[![PyPI version](https://badge.fury.io/py/env-drift.svg)](https://badge.fury.io/py/env-drift)
+[![PyPI version](https://badge.fury.io/py/envlock-cli.svg)](https://badge.fury.io/py/envlock-cli)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 Freeze your environment. Detect when it drifts.
@@ -33,7 +33,7 @@ staging with production.
 ## 📥 Installation
 
 ```bash
-pip install env-drift       # the command is `envlock`
+pip install envlock-cli     # the command is `envlock`
 ```
 
 ---
@@ -53,7 +53,7 @@ envlock snapshot --output locks/prod.json # custom location
 ```bash
 envlock check                                        # terminal report
 envlock check --format json | jq .summary            # JSON on stdout (progress goes to stderr)
-envlock check --format markdown -o env-drift.md      # Markdown report file
+envlock check --format markdown -o drift-report.md      # Markdown report file
 envlock check --baseline locks/prod.json --fail-on critical
 ```
 
@@ -107,12 +107,12 @@ The exit code tells your pipeline what happened:
 ```yaml
 # GitHub Actions — fail only on critical drift, keep the report as an artifact
 - name: Check environment drift
-  run: envlock check --baseline .envlock.json --fail-on critical --format markdown -o env-drift.md
+  run: envlock check --baseline .envlock.json --fail-on critical --format markdown -o drift-report.md
 - uses: actions/upload-artifact@v4
   if: always()
   with:
-    name: env-drift
-    path: env-drift.md
+    name: drift-report
+    path: drift-report.md
 ```
 
 ---

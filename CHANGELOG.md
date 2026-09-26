@@ -2,6 +2,9 @@
 
 ## 1.1.0
 
+First release on PyPI, as **`envlock-cli`** (`envlock` is taken and PyPI rejects `env-drift` as too
+similar to `envdrift`). The command is still `envlock`.
+
 ### Fixed
 - `envlock check --format json` printed progress messages on stdout, so the output was not valid JSON
   (the README's `| jq` example failed). Progress and errors now go to stderr.
@@ -28,4 +31,4 @@
 
 ## 1.0.0
 
-- Initial release (published on PyPI as `env-drift`; the `envlock` name was taken).
+- Initial release (not published on PyPI).
